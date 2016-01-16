@@ -56,20 +56,26 @@ public class CucumberExecutor {
      */
     private final ClassFinder classFinder;
 
-    /**
-     * The {@link cucumber.runtime.RuntimeOptions} to get the {@link CucumberFeature}s from.
-     */
-    private final RuntimeOptions runtimeOptions;
+    private final List<RuntimeStruct> runtimeStruct;
 
-    /**
-     * The {@link cucumber.runtime.Runtime} to run with.
-     */
-    private final Runtime runtime;
+    private class RuntimeStruct {
 
-    /**
-     * The actual {@link CucumberFeature}s to run.
-     */
-    private final List<CucumberFeature> cucumberFeatures;
+        /**
+         * The {@link cucumber.runtime.RuntimeOptions} to get the {@link CucumberFeature}s from.
+         */
+        private RuntimeOptions runtimeOptions;
+
+        /**
+         * The {@link cucumber.runtime.Runtime} to run with.
+         */
+        private Runtime runtime;
+
+        /**
+         * The actual {@link CucumberFeature}s to run.
+         */
+        private List<CucumberFeature> cucumberFeatures;
+
+    }
 
     /**
      * Creates a new instance for the given parameters.
@@ -85,42 +91,56 @@ public class CucumberExecutor {
         this.instrumentation = instrumentation;
         this.classLoader = context.getClassLoader();
         this.classFinder = createDexClassFinder(context);
-        this.runtimeOptions = createRuntimeOptions(context);
 
         ResourceLoader resourceLoader = new AndroidResourceLoader(context);
-        this.runtime = new Runtime(resourceLoader, classLoader, createBackends(), runtimeOptions);
-        this.cucumberFeatures = runtimeOptions.cucumberFeatures(resourceLoader);
+
+        this.runtimeStruct = createRuntimeStruct(context, resourceLoader, classLoader, createBackends());
     }
+
 
     /**
      * Runs the cucumber scenarios with the specified arguments.
      */
     public void execute() {
 
-        runtimeOptions.addPlugin(new AndroidInstrumentationReporter(runtime, instrumentation, getNumberOfConcreteScenarios()));
-        runtimeOptions.addPlugin(new AndroidLogcatReporter(runtime, TAG));
+        for (RuntimeStruct runtimeStruct: this.runtimeStruct) {
+            RuntimeOptions runtimeOptions = runtimeStruct.runtimeOptions;
+            Runtime runtime = runtimeStruct.runtime;
+            List<CucumberFeature> cucumberFeatures = runtimeStruct.cucumberFeatures;
 
-        // TODO: This is duplicated in info.cucumber.Runtime.
+            runtimeOptions.addPlugin(new AndroidInstrumentationReporter(runtime, instrumentation, getNumberOfConcreteScenarios()));
+            runtimeOptions.addPlugin(new AndroidLogcatReporter(runtime, TAG));
 
-        final Reporter reporter = runtimeOptions.reporter(classLoader);
-        final Formatter formatter = runtimeOptions.formatter(classLoader);
+            // TODO: This is duplicated in info.cucumber.Runtime.
 
-        final StepDefinitionReporter stepDefinitionReporter = runtimeOptions.stepDefinitionReporter(classLoader);
-        runtime.getGlue().reportStepDefinitions(stepDefinitionReporter);
+            final Reporter reporter = runtimeOptions.reporter(classLoader);
+            final Formatter formatter = runtimeOptions.formatter(classLoader);
 
-        for (final CucumberFeature cucumberFeature : cucumberFeatures) {
-            cucumberFeature.run(formatter, reporter, runtime);
+            final StepDefinitionReporter stepDefinitionReporter = runtimeOptions.stepDefinitionReporter(classLoader);
+            runtime.getGlue().reportStepDefinitions(stepDefinitionReporter);
+
+            for (final CucumberFeature cucumberFeature : cucumberFeatures) {
+                cucumberFeature.run(formatter, reporter, runtime);
+            }
+
+            formatter.done();
+            formatter.close();
         }
-
-        formatter.done();
-        formatter.close();
     }
 
     /**
      * @return the number of actual scenarios, including outlined
      */
     public int getNumberOfConcreteScenarios() {
-        return ScenarioCounter.countScenarios(cucumberFeatures);
+        return ScenarioCounter.countScenarios(getCucumberFeatures(this.runtimeStruct));
+    }
+
+    private List<CucumberFeature> getCucumberFeatures(List<RuntimeStruct> runtimeStruct) {
+        ArrayList<CucumberFeature> cucumberFeatures = new ArrayList<CucumberFeature>();
+        for(RuntimeStruct rs: runtimeStruct) {
+            cucumberFeatures.addAll(rs.cucumberFeatures);
+        }
+        return cucumberFeatures;
     }
 
     private void trySetCucumberOptionsToSystemProperties(final Arguments arguments) {
@@ -144,16 +164,30 @@ public class CucumberExecutor {
         }
     }
 
-    private RuntimeOptions createRuntimeOptions(final Context context) {
+    private List<RuntimeStruct> createRuntimeStruct(final Context context, ResourceLoader resourceLoader, ClassLoader classLoader, Collection<? extends Backend> backends) {
+        ArrayList<RuntimeStruct> runtimeStructs = new ArrayList<RuntimeStruct>();
+
         for (final Class<?> clazz : classFinder.getDescendants(Object.class, context.getPackageName())) {
             if (clazz.isAnnotationPresent(CucumberOptions.class)) {
                 Log.d(TAG, "Found CucumberOptions in class " + clazz.getName());
                 final RuntimeOptionsFactory factory = new RuntimeOptionsFactory(clazz);
-                return factory.create();
+                RuntimeStruct runtimeStruct = new RuntimeStruct();
+
+                RuntimeOptions runtimeOptions = factory.create();
+                runtimeStruct.runtimeOptions = runtimeOptions;
+                runtimeStruct.runtime = new Runtime(resourceLoader, classLoader, createBackends(), runtimeOptions);
+                runtimeStruct.cucumberFeatures = runtimeOptions.cucumberFeatures(resourceLoader);
+
+                runtimeStructs.add(runtimeStruct);
             }
         }
 
-        throw new CucumberException("No CucumberOptions annotation");
+        if(runtimeStructs.isEmpty())
+            throw new CucumberException("No CucumberOptions annotation");
+
+        return runtimeStructs;
+
+
     }
 
     private Collection<? extends Backend> createBackends() {
